@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: etyc-image-backend-free
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: CLOUDFLARE_ACCOUNT_ID
+        sync: false
+      - key: CLOUDFLARE_API_TOKEN
+        sync: false
+      - key: CLOUDFLARE_GATEWAY_ID
+        value: default
+      - key: CLOUDFLARE_MODEL
+        value: @cf/black-forest-labs/flux-2-klein-4b
