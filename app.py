@@ -1,3 +1,4 @@
+import base64
 import io
 import os
 from typing import Optional
@@ -7,7 +8,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 
-app = FastAPI(title="ETYC Free Backend Diagnostic")
+app = FastAPI(title="ETYC Free Backend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -17,33 +18,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def env_status():
-    account = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
-    token = os.getenv("CLOUDFLARE_API_TOKEN", "")
-    gateway = os.getenv("CLOUDFLARE_GATEWAY_ID", "default")
-    model = os.getenv("CLOUDFLARE_MODEL", "@cf/black-forest-labs/flux-2-klein-4b")
-    return {
-        "account_present": bool(account.strip()),
-        "account_length": len(account.strip()),
-        "token_present": bool(token.strip()),
-        "token_length": len(token.strip()),
-        "gateway_id": gateway,
-        "model": model,
-    }
-
-@app.on_event("startup")
-def startup_debug():
-    s = env_status()
-    print("ETYC ENV STATUS:", s)
-
-@app.get("/health")
-def health():
-    s = env_status()
-    return {
-        "ok": s["account_present"] and s["token_present"],
-        "provider": "Cloudflare Workers AI",
-        **s,
-    }
+CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
+CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "")
+CLOUDFLARE_GATEWAY_ID = os.getenv("CLOUDFLARE_GATEWAY_ID", "default")
+CLOUDFLARE_MODEL = os.getenv(
+    "CLOUDFLARE_MODEL",
+    "@cf/black-forest-labs/flux-2-klein-4b"
+)
 
 def resize_for_flux(raw: bytes, max_dim: int = 500) -> bytes:
     image = Image.open(io.BytesIO(raw)).convert("RGB")
@@ -51,6 +32,14 @@ def resize_for_flux(raw: bytes, max_dim: int = 500) -> bytes:
     out = io.BytesIO()
     image.save(out, format="JPEG", quality=90)
     return out.getvalue()
+
+@app.get("/health")
+def health():
+    return {
+        "ok": True,
+        "provider": "Cloudflare Workers AI",
+        "model": CLOUDFLARE_MODEL
+    }
 
 @app.post("/edit")
 async def edit_image(
@@ -64,58 +53,70 @@ async def edit_image(
     location_canon: str = Form(""),
     reference_types: str = Form(""),
     canon_lock: str = Form("true"),
-    intervention: str = Form("CorrecciÃ³n"),
+    intervention: str = Form("Corrección"),
     instruction: str = Form(""),
 ):
-    s = env_status()
-    missing = []
-    if not s["account_present"]:
-        missing.append("CLOUDFLARE_ACCOUNT_ID")
-    if not s["token_present"]:
-        missing.append("CLOUDFLARE_API_TOKEN")
-
-    if missing:
-        raise HTTPException(status_code=500, detail={
-            "message": "Faltan variables de entorno en Render.",
-            "missing": missing,
-            "account_present": s["account_present"],
-            "token_present": s["token_present"],
-        })
-
-    account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
-    api_token = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
-    gateway_id = os.getenv("CLOUDFLARE_GATEWAY_ID", "default").strip()
-    model = os.getenv("CLOUDFLARE_MODEL", "@cf/black-forest-labs/flux-2-klein-4b").strip()
+    if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_API_TOKEN:
+        raise HTTPException(
+            status_code=500,
+            detail="Faltan CLOUDFLARE_ACCOUNT_ID o CLOUDFLARE_API_TOKEN."
+        )
 
     source_bytes = resize_for_flux(await source_image.read())
-    canon_bytes = resize_for_flux(await canon_image.read()) if canon_image is not None else None
+
+    canon_bytes = None
+    if canon_image is not None:
+        canon_bytes = resize_for_flux(await canon_image.read())
 
     prompt = f"""
 ETYC STUDIO FREE EDITION
 
-Character: {character_id} â {character_name}
-Canon: {canon_summary}
-Locked rules: {locked_rules}
-Location: {location_name}
-Location canon: {location_canon}
-Reference intent: {reference_types}
-Canon Lock: {canon_lock}
-Intervention: {intervention}
-User instruction: {instruction}
+Character: {character_id} — {character_name}
+
+Canon:
+{canon_summary}
+
+Locked rules:
+{locked_rules}
+
+Location:
+{location_name}
+
+Location canon:
+{location_canon}
+
+Reference intent:
+{reference_types}
+
+Canon Lock:
+{canon_lock}
+
+Intervention:
+{intervention}
+
+User instruction:
+{instruction}
 
 Image 0 is the canonical character reference when present.
 Image 1 is the source photo used for pose, framing or composition.
-Preserve canonical identity and defining traits.
+
+Preserve the canonical identity and defining traits.
 Use the source image mainly for pose and composition.
-Avoid watercolor or painterly drift.
-Do not add unrequested accessories, text, captions, UI or watermarks.
+Do not introduce watercolor or painterly drift.
+Do not add unrequested accessories.
+Do not add text, captions, UI or watermarks.
 """.strip()
 
-    url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
+    url = (
+        f"https://api.cloudflare.com/client/v4/accounts/"
+        f"{CLOUDFLARE_ACCOUNT_ID}/ai/run/{CLOUDFLARE_MODEL}"
+    )
+
     headers = {
-        "Authorization": f"Bearer {api_token}",
-        "cf-aig-gateway-id": gateway_id,
+        "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+        "cf-aig-gateway-id": CLOUDFLARE_GATEWAY_ID,
     }
+
     files = [
         ("input_image_1", ("source.jpg", source_bytes, "image/jpeg")),
         ("prompt", (None, prompt)),
@@ -123,27 +124,40 @@ Do not add unrequested accessories, text, captions, UI or watermarks.
         ("height", (None, "1024")),
         ("guidance", (None, "5.5")),
     ]
-    if canon_bytes is not None:
-        files.insert(0, ("input_image_0", ("canon.jpg", canon_bytes, "image/jpeg")))
 
-    response = requests.post(url, headers=headers, files=files, timeout=240)
+    if canon_bytes is not None:
+        files.insert(
+            0,
+            ("input_image_0", ("canon.jpg", canon_bytes, "image/jpeg"))
+        )
+
+    response = requests.post(
+        url,
+        headers=headers,
+        files=files,
+        timeout=240
+    )
+
     if not response.ok:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=response.text
+        )
 
     payload = response.json()
-    image_b64 = payload.get("result", {}).get("image") if isinstance(payload, dict) else None
-    if not image_b64 and isinstance(payload, dict):
-        image_b64 = payload.get("image")
+
+    image_b64 = None
+    if isinstance(payload, dict):
+        image_b64 = payload.get("result", {}).get("image") or payload.get("image")
 
     if not image_b64:
-        raise HTTPException(status_code=502, detail={
-            "message": "Respuesta inesperada de Cloudflare.",
-            "cloudflare_success": payload.get("success") if isinstance(payload, dict) else None,
-            "cloudflare_errors": payload.get("errors") if isinstance(payload, dict) else None,
-        })
+        raise HTTPException(
+            status_code=502,
+            detail=f"Respuesta inesperada de Cloudflare: {payload}"
+        )
 
     return {
         "image_base64": image_b64,
         "provider": "Cloudflare Workers AI",
-        "model": model,
+        "model": CLOUDFLARE_MODEL,
     }
