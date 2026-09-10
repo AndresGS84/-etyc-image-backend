@@ -35,12 +35,28 @@ def resize_for_flux(raw: bytes, max_dim: int = 500) -> bytes:
 
 @app.get("/health")
 def health():
-    return {
-        "ok": True,
-        "provider": "Cloudflare Workers AI",
-        "model": CLOUDFLARE_MODEL
-    }
+    account = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
+    token = os.getenv("CLOUDFLARE_API_TOKEN", "")
 
+    cloudflare_keys = sorted([
+        key for key in os.environ.keys()
+        if key.upper().startswith("CLOUDFLARE")
+    ])
+
+    return {
+        "ok": bool(account.strip()) and bool(token.strip()),
+        "account_present": bool(account.strip()),
+        "account_length": len(account.strip()),
+        "token_present": bool(token.strip()),
+        "token_length": len(token.strip()),
+        "cloudflare_env_keys": cloudflare_keys,
+        "expected_keys": [
+            "CLOUDFLARE_ACCOUNT_ID",
+            "CLOUDFLARE_API_TOKEN",
+            "CLOUDFLARE_GATEWAY_ID",
+            "CLOUDFLARE_MODEL"
+        ]
+    }
 @app.post("/edit")
 async def edit_image(
     source_image: UploadFile = File(...),
